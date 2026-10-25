@@ -8,6 +8,7 @@ permissions:
 jobs:
   windows:
     runs-on: windows-latest
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -17,8 +18,8 @@ jobs:
         with:
           workspaces: src-tauri
       - run: cargo fmt --manifest-path src-tauri/Cargo.toml -- --check
-      - run: cargo test --manifest-path src-tauri/Cargo.toml
-      - run: cargo build --release --manifest-path src-tauri/Cargo.toml
+      - run: cargo test --locked --manifest-path src-tauri/Cargo.toml
+      - run: cargo build --release --locked --manifest-path src-tauri/Cargo.toml
       - uses: actions/upload-artifact@v4
         with:
           name: Paper-Windows-portable
@@ -26,3 +27,28 @@ jobs:
             src-tauri/target/release/paper-reader.exe
             src-tauri/target/release/WebView2Loader.dll
             LICENSE
+  browser:
+    runs-on: windows-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Install browser test dependencies
+        run: npm install --ignore-scripts --no-package-lock --no-audit --no-fund
+      - name: Check JavaScript syntax
+        run: |
+          node --check web/app.js
+          node --check scripts/preview.mjs
+      - name: Run browser regressions in Microsoft Edge
+        run: npm test
+        env:
+          BROWSER_CHANNEL: msedge
+      - name: Upload browser test evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: Paper-browser-test-results
+          path: test-results
+          if-no-files-found: ignore
