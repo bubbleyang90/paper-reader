@@ -99,9 +99,9 @@ test('raw picture and background cannot bypass click-to-load remote images', asy
   assert.equal(await page.locator('#article .image-placeholder').count(), 1);
   await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
   assert.deepEqual(requests, []);
-  const request = page.waitForRequest('https://paper-test.invalid/click.png');
+  const response = page.waitForResponse('https://paper-test.invalid/click.png');
   await page.locator('#article .image-placeholder').click();
-  await request;
+  await response;
   assert.deepEqual(requests, ['https://paper-test.invalid/click.png']);
 });
 
