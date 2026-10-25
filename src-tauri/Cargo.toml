@@ -1,0 +1,40 @@
+[package]
+name = "paper-reader"
+version = "0.1.0"
+description = "A quiet, lightweight Markdown reader"
+edition = "2021"
+license = "MIT"
+default-run = "paper-reader"
+
+[lib]
+name = "paper_reader"
+path = "src/lib.rs"
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = [] }
+serde = { version = "1", features = ["derive"] }
+pulldown-cmark = { version = "0.13", default-features = false, features = ["html"] }
+ammonia = "4"
+rfd = "0.15"
+base64 = "0.22"
+percent-encoding = "2"
+url = "2"
+open = "5"
+
+[dev-dependencies]
+tempfile = "3"
+
+[features]
+default = ["custom-protocol"]
+custom-protocol = ["tauri/custom-protocol"]
+
+[profile.release]
+opt-level = "s"
+lto = true
+codegen-units = 1
+panic = "abort"
+strip = true
+

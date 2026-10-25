@@ -1,0 +1,8 @@
+/src-tauri/target/
+/src-tauri/gen/
+/.tools/
+/node_modules/
+/test-results/
+/release/
+*.log
+/.DS_Store

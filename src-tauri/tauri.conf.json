@@ -1,0 +1,47 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "Paper",
+  "version": "0.1.0",
+  "identifier": "studio.paper.reader",
+  "build": {
+    "frontendDist": "../web"
+  },
+  "app": {
+    "withGlobalTauri": true,
+    "windows": [
+      {
+        "label": "main",
+        "title": "Paper · 纸页",
+        "width": 1280,
+        "height": 860,
+        "minWidth": 760,
+        "minHeight": 560,
+        "center": true,
+        "decorations": true,
+        "dragDropEnabled": true,
+        "additionalBrowserArgs": "--disable-gpu --disable-gpu-compositing --disable-features=msWebOOUI,msPdfOOUI",
+        "backgroundColor": "#f8f7f4"
+      }
+    ],
+    "security": {
+      "csp": "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: http: https:; font-src 'self'; connect-src ipc: http://ipc.localhost; object-src 'none'; base-uri 'none'; frame-src 'none'; form-action 'none'",
+      "capabilities": ["main"]
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": ["nsis"],
+    "category": "Productivity",
+    "shortDescription": "A lightweight Markdown reader",
+    "icon": ["icons/icon.png", "icons/icon.ico"],
+    "fileAssociations": [
+      {
+        "ext": ["md", "markdown", "mdown"],
+        "name": "Markdown document",
+        "description": "Markdown document",
+        "role": "Viewer"
+      }
+    ]
+  }
+}
+
