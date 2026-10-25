@@ -84,6 +84,8 @@ node tests/native-smoke.mjs
 
 如果使用其他浏览器，将 `BROWSER_CHANNEL` 设置为 Playwright 支持的通道，如 `chrome`。测试会自动启动临时本地服务，并把界面截图保存到 `test-results`。测试覆盖实际文件读取、中文、GFM、内容清洗、搜索、偏好保存、视图切换和阅读进度。
 
+运行 `npm test` 可执行全部浏览器测试，包括快速更换搜索词、远程资源加载限制，以及使用模拟 Tauri IPC 验证取消／失败打开和延迟图片响应。模拟 IPC 测试不等同于真实 WebView2 桌面验收。GitHub Actions 会独立运行 Windows Rust 测试／发布构建和 Edge 浏览器回归；无需在个人电脑运行这些检查。
+
 ## 低占用设计
 
 - 系统 WebView：不随应用携带完整浏览器或 Node.js 运行时。

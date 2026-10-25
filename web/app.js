@@ -80,9 +80,10 @@ fn main() {
     width: saved.width === 'wide' ? 'wide' : 'comfortable',
     recent: Array.isArray(saved.recent) ? saved.recent.filter(x => x && typeof x.path === 'string' && typeof x.name === 'string').slice(0, 12) : [],
     positions: saved.positions && typeof saved.positions === 'object' ? saved.positions : {},
-    doc: null, headings: [], hits: [], hitIndex: 0, sourceMode: false, loadId: 0,
+    doc: null, headings: [], hits: [], hitIndex: 0, sourceMode: false, loadId: 0, documentId: 0,
   };
   let parserReady, observer, imageObserver, scrollFrame, saveTimer, toastTimer, searchTimer;
+  let searchedQuery = null;
   const media = matchMedia('(prefers-color-scheme: dark)');
   const compactOutline = matchMedia('(max-width: 1020px)');
   function setOutlineHidden(hidden) {
@@ -126,8 +127,8 @@ fn main() {
     if (!parserReady) parserReady = Promise.all([loadScript('./vendor/marked.umd.js'), loadScript('./vendor/purify.min.js')]);
     await parserReady;
     const html = DOMPurify.sanitize(marked.parse(source, { gfm: true, breaks: false }), {
-      USE_PROFILES: { html: true }, FORBID_TAGS: ['style', 'form', 'button', 'textarea', 'select', 'video', 'audio'],
-      FORBID_ATTR: ['style', 'name', 'autofocus', 'formaction'], ADD_ATTR: ['disabled', 'checked'],
+      USE_PROFILES: { html: true }, FORBID_TAGS: ['style', 'form', 'button', 'textarea', 'select', 'video', 'audio', 'source'],
+      FORBID_ATTR: ['style', 'name', 'autofocus', 'formaction', 'srcset', 'background'], ADD_ATTR: ['disabled', 'checked'],
     });
     const wordCount = (source.match(/[\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}]|[\p{L}\p{N}]+/gu) || []).length;
     return { html, wordCount, readingMinutes: Math.max(1, Math.ceil(wordCount / 400)) };
@@ -234,7 +235,7 @@ fn main() {
         pending.set(img, async () => {
           try {
             const data = await invoke('read_local_image', { documentPath: doc.path, imagePath: src });
-            if (id === state.loadId) img.src = data;
+            if (id === state.documentId) img.src = data;
           } catch { img.alt = `${img.alt || '图片'}（无法读取）`; img.classList.add('image-error'); }
         });
       } else { img.alt = `${img.alt || '图片'}（浏览器预览不读取同目录文件）`; }
@@ -244,7 +245,7 @@ fn main() {
       imageObserver?.disconnect();
       const queue = []; let active = 0;
       const pump = () => {
-        while (active < 2 && queue.length && id === state.loadId) {
+        while (active < 2 && queue.length && id === state.documentId) {
           active++;
           queue.shift()().finally(() => { active--; updateProgress(); pump(); });
         }
@@ -275,6 +276,8 @@ fn main() {
     });
     const loadImages = await prepareImages(template.content, doc, id);
     if (id !== state.loadId) return;
+    // Opening or cancelling another file must not invalidate the displayed images.
+    state.documentId = id;
     state.doc = { path: doc.path, name: doc.name, source: doc.source, wordCount: doc.wordCount, readingMinutes: doc.readingMinutes };
     $('article').replaceChildren(template.content);
     decorateArticle();
@@ -289,6 +292,7 @@ fn main() {
     renderRecent(); persist();
     document.body.classList.remove('sidebar-open');
     requestAnimationFrame(() => {
+      if (id !== state.documentId) return;
       const el = $('reader-scroll'); el.scrollTop = restore * Math.max(0, el.scrollHeight - el.clientHeight); updateProgress();
     });
     loadImages();
@@ -340,6 +344,7 @@ fn main() {
   function runSearch() {
     clearHits();
     const query = $('search-input').value.trim().toLocaleLowerCase();
+    searchedQuery = query;
     if (!query) { $('search-count').textContent = ''; return; }
     const walker = document.createTreeWalker($('article'), NodeFilter.SHOW_TEXT, {
       acceptNode: node => node.parentElement.closest('button,script,style') ? NodeFilter.FILTER_REJECT : NodeFilter.FILTER_ACCEPT,
@@ -359,6 +364,14 @@ fn main() {
     }
     selectHit(0);
   }
+  function navigateSearch(delta) {
+    clearTimeout(searchTimer);
+    const query = $('search-input').value.trim().toLocaleLowerCase();
+    if (query !== searchedQuery) {
+      runSearch();
+      if (delta < 0 && state.hits.length) selectHit(-1);
+    } else selectHit(delta);
+  }
   function selectHit(delta) {
     if (!state.hits.length) { $('search-count').textContent = '无匹配'; return; }
     state.hits[state.hitIndex]?.classList.remove('current');
@@ -371,7 +384,7 @@ fn main() {
     $('search-bar').hidden = false; $('search-toggle').setAttribute('aria-expanded', 'true'); $('search-input').focus(); $('search-input').select();
   }
   function closeSearch() {
-    clearTimeout(searchTimer); clearHits(); $('search-input').value = ''; $('search-count').textContent = '';
+    clearTimeout(searchTimer); clearHits(); searchedQuery = null; $('search-input').value = ''; $('search-count').textContent = '';
     $('search-bar').hidden = true; $('search-toggle').setAttribute('aria-expanded', 'false');
   }
   function toggleSource() {
@@ -413,8 +426,8 @@ fn main() {
   $('search-toggle').addEventListener('click', () => $('search-bar').hidden ? openSearch() : closeSearch());
   $('search-close').addEventListener('click', closeSearch);
   $('search-input').addEventListener('input', () => { clearTimeout(searchTimer); searchTimer = setTimeout(runSearch, 160); });
-  $('search-input').addEventListener('keydown', e => { if (e.key === 'Enter') { e.preventDefault(); clearTimeout(searchTimer); if (!state.hits.length) runSearch(); else selectHit(e.shiftKey ? -1 : 1); } });
-  $('search-prev').addEventListener('click', () => selectHit(-1)); $('search-next').addEventListener('click', () => selectHit(1));
+  $('search-input').addEventListener('keydown', e => { if (e.key === 'Enter') { e.preventDefault(); navigateSearch(e.shiftKey ? -1 : 1); } });
+  $('search-prev').addEventListener('click', () => navigateSearch(-1)); $('search-next').addEventListener('click', () => navigateSearch(1));
   $('reader-scroll').addEventListener('scroll', () => {
     if (!scrollFrame) scrollFrame = requestAnimationFrame(updateProgress);
     clearTimeout(saveTimer); saveTimer = setTimeout(rememberPosition, 250);
