@@ -1,0 +1,178 @@
+name: Publish Paper v0.1.0
+on:
+  push:
+    branches: ['release/v0.1.0']
+    paths: ['.github/workflows/release-v0.1.0.yml']
+permissions:
+  contents: read
+concurrency:
+  group: paper-release-v0.1.0
+  cancel-in-progress: false
+env:
+  RELEASE_SHA: 953e74bb0e10a83c8bb5d454e4e30681f2a86587
+jobs:
+  build:
+    if: github.repository == 'bubbleyang90/paper-reader'
+    runs-on: windows-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.RELEASE_SHA }}
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+          targets: x86_64-pc-windows-msvc
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+      - name: Verify version and exact source
+        shell: pwsh
+        run: |
+          if ((git rev-parse HEAD) -ne $env:RELEASE_SHA) { throw 'Source commit mismatch' }
+          $package = Get-Content package.json -Raw | ConvertFrom-Json
+          $tauri = Get-Content src-tauri/tauri.conf.json -Raw | ConvertFrom-Json
+          if ($package.version -ne '0.1.0' -or $tauri.version -ne '0.1.0') { throw 'Version mismatch' }
+          $metadata = cargo metadata --manifest-path src-tauri/Cargo.toml --no-deps --format-version 1 | ConvertFrom-Json
+          if ($LASTEXITCODE -ne 0) { throw 'Cargo metadata failed' }
+          if (($metadata.packages | Where-Object name -eq 'paper-reader').version -ne '0.1.0') { throw 'Cargo version mismatch' }
+      - name: Browser checks
+        shell: pwsh
+        env:
+          BROWSER_CHANNEL: msedge
+        run: |
+          npm install --ignore-scripts --no-package-lock --no-audit --no-fund
+          if ($LASTEXITCODE -ne 0) { throw 'Dependency installation failed' }
+          node --check web/app.js
+          if ($LASTEXITCODE -ne 0) { throw 'JavaScript syntax check failed' }
+          npm test
+          if ($LASTEXITCODE -ne 0) { throw 'Browser tests failed' }
+      - run: cargo fmt --manifest-path src-tauri/Cargo.toml -- --check
+      - run: cargo test --locked --manifest-path src-tauri/Cargo.toml
+      - run: cargo build --release --locked --target x86_64-pc-windows-msvc --manifest-path src-tauri/Cargo.toml
+      - name: Package portable application
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force dist/package/licenses | Out-Null
+          Copy-Item src-tauri/target/x86_64-pc-windows-msvc/release/paper-reader.exe dist/package/Paper.exe
+          Copy-Item LICENSE dist/package/LICENSE
+          Copy-Item web/vendor/DOMPurify.LICENSE dist/package/licenses/DOMPurify.LICENSE
+          Copy-Item web/vendor/marked.LICENSE.md dist/package/licenses/marked.LICENSE.md
+          $loader = 'src-tauri/target/x86_64-pc-windows-msvc/release/WebView2Loader.dll'
+          if (Test-Path $loader) { Copy-Item $loader dist/package/WebView2Loader.dll }
+          @'
+          Paper 0.1.0 - Windows x64 portable
+          Extract the entire ZIP to a folder, then run Paper.exe.
+          Microsoft Edge WebView2 Runtime must be installed.
+          This build is unsigned. No installer or file associations are installed.
+          Markdown documents are opened read-only.
+          Source: https://github.com/bubbleyang90/paper-reader
+          Source commit: 953e74bb0e10a83c8bb5d454e4e30681f2a86587
+          Rust and browser tests passed; native IPC browser tests use mocks,
+          not full desktop WebView2 end-to-end acceptance.
+          Third-party notices: see licenses/ and the source repository dependencies.
+          '@ | Set-Content dist/package/README.txt -Encoding utf8
+          Compress-Archive -Path dist/package/* -DestinationPath dist/Paper-v0.1.0-windows-x64.zip
+          $hash = (Get-FileHash dist/Paper-v0.1.0-windows-x64.zip -Algorithm SHA256).Hash.ToLowerInvariant()
+          "$hash  Paper-v0.1.0-windows-x64.zip" | Set-Content dist/SHA256SUMS.txt -Encoding ascii
+          @'
+          ## 纸页 Paper v0.1.0
+          首个 Windows x64 便携版，基于已合并并验证的代码。
+          
+          - Markdown / UTF-8 文本阅读、章节目录、搜索、阅读进度与主题设置。
+          - 修复快速更换搜索词时使用旧结果的问题。
+          - 修复取消或失败打开文件时当前图片队列中断的问题。
+          - 加强浏览器预览远程图片的点击加载限制。
+          
+          ### 下载与运行
+          下载 Paper-v0.1.0-windows-x64.zip，完整解压后运行 Paper.exe。
+          需要 Microsoft Edge WebView2 Runtime。此版本未做代码签名，不包含安装器。
+          SHA256SUMS.txt 可用于校验 ZIP 完整性。
+          
+          ### 验证范围
+          发布流水线运行 14 项 Edge 浏览器测试、8 项 Rust 测试、格式检查与 Windows x64 release 构建。
+          原生 IPC 测试使用模拟接口，不代表真实 WebView2 桌面端到端验收。
+          发布源提交：953e74bb0e10a83c8bb5d454e4e30681f2a86587。
+          '@ | Set-Content dist/release-notes.md -Encoding utf8
+      - uses: actions/upload-artifact@v4
+        with:
+          name: paper-v0.1.0-release-assets
+          path: |
+            dist/Paper-v0.1.0-windows-x64.zip
+            dist/SHA256SUMS.txt
+            dist/release-notes.md
+          if-no-files-found: error
+  publish:
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: paper-v0.1.0-release-assets
+          path: dist
+      - name: Validate assets and publish this release only
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            const crypto = require('crypto');
+            const { owner, repo } = context.repo;
+            const tag = 'v0.1.0';
+            const target = process.env.RELEASE_SHA;
+            const zipName = 'Paper-v0.1.0-windows-x64.zip';
+            const zip = fs.readFileSync('dist/' + zipName);
+            const sum = crypto.createHash('sha256').update(zip).digest('hex');
+            const expected = fs.readFileSync('dist/SHA256SUMS.txt', 'utf8').trim();
+            if (expected !== sum + '  ' + zipName) throw new Error('Checksum mismatch');
+            const main = await github.rest.repos.getBranch({ owner, repo, branch: 'main' });
+            if (main.data.commit.sha !== target) throw new Error('main changed; review release target before publishing');
+            let ref;
+            try { ref = await github.rest.git.getRef({ owner, repo, ref: 'tags/' + tag }); }
+            catch (error) { if (error.status !== 404) throw error; }
+            if (ref && (ref.data.object.type !== 'commit' || ref.data.object.sha !== target))
+              throw new Error('Existing tag targets different code; refusing to change it');
+            let release;
+            try { release = (await github.rest.repos.getReleaseByTag({ owner, repo, tag })).data; }
+            catch (error) { if (error.status !== 404) throw error; }
+            if (release && (!release.draft || release.target_commitish !== target))
+              throw new Error('Existing release is published or has a different target; refusing to overwrite');
+            if (!release) release = (await github.rest.repos.createRelease({
+              owner, repo, tag_name: tag, target_commitish: target,
+              name: '纸页 Paper v0.1.0', body: fs.readFileSync('dist/release-notes.md', 'utf8'),
+              draft: true, prerelease: false
+            })).data;
+            const existing = (await github.rest.repos.listReleaseAssets({
+              owner, repo, release_id: release.id, per_page: 100
+            })).data;
+            const names = [zipName, 'SHA256SUMS.txt'];
+            if (existing.some(asset => !names.includes(asset.name)))
+              throw new Error('Unexpected draft assets; manual review required');
+            for (const name of names) {
+              const data = fs.readFileSync('dist/' + name);
+              const digest = 'sha256:' + crypto.createHash('sha256').update(data).digest('hex');
+              const old = existing.find(asset => asset.name === name);
+              if (old) {
+                if (old.digest !== digest || old.size !== data.length)
+                  throw new Error('Existing draft asset differs: ' + name);
+              } else {
+                const uploaded = (await github.rest.repos.uploadReleaseAsset({
+                  owner, repo, release_id: release.id, name, data,
+                  headers: { 'content-type': name.endsWith('.zip') ? 'application/zip' : 'text/plain',
+                    'content-length': data.length }
+                })).data;
+                if (uploaded.digest !== digest || uploaded.size !== data.length)
+                  throw new Error('Uploaded asset verification failed: ' + name);
+              }
+            }
+            const published = await github.rest.repos.updateRelease({
+              owner, repo, release_id: release.id, draft: false, make_latest: 'true'
+            });
+            if (published.data.draft) throw new Error('Release remains draft');
+            core.notice('Published ' + published.data.html_url);
