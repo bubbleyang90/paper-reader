@@ -1,0 +1,137 @@
+name: Add Paper v0.1.0 Windows installer
+on:
+  push:
+    branches: ['release/v0.1.0']
+    paths: ['.github/workflows/installer-v0.1.0.yml']
+permissions:
+  contents: read
+concurrency:
+  group: paper-installer-v0.1.0
+  cancel-in-progress: false
+env:
+  RELEASE_SHA: 953e74bb0e10a83c8bb5d454e4e30681f2a86587
+jobs:
+  installer:
+    if: github.repository == 'bubbleyang90/paper-reader'
+    runs-on: windows-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.RELEASE_SHA }}
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-pc-windows-msvc
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+      - name: Verify source and install pinned official Tauri CLI
+        shell: pwsh
+        run: |
+          if ((git rev-parse HEAD) -ne $env:RELEASE_SHA) { throw 'Source commit mismatch' }
+          if ((Get-Content src-tauri/tauri.conf.json -Raw | ConvertFrom-Json).version -ne '0.1.0') { throw 'Version mismatch' }
+          npm install --no-save --no-package-lock --ignore-scripts --no-audit --no-fund @tauri-apps/cli@2.12.4
+          if ($LASTEXITCODE -ne 0) { throw 'CLI installation failed' }
+          node node_modules/@tauri-apps/cli/tauri.js --version
+          if ($LASTEXITCODE -ne 0) { throw 'CLI unavailable' }
+      - name: Build Windows x64 NSIS installer
+        shell: pwsh
+        run: |
+          '{"bundle":{"windows":{"nsis":{"installMode":"currentUser","languages":["SimpChinese","English"],"displayLanguageSelector":true}}}}' | Set-Content installer-config.json -Encoding utf8
+          $config = (Resolve-Path installer-config.json).Path
+          node node_modules/@tauri-apps/cli/tauri.js build --ci --bundles nsis --target x86_64-pc-windows-msvc --config $config -- --locked
+          if ($LASTEXITCODE -ne 0) { throw 'NSIS build failed' }
+      - name: Verify installer and prepare checksum
+        shell: pwsh
+        run: |
+          $installers = @(Get-ChildItem src-tauri/target/x86_64-pc-windows-msvc/release/bundle/nsis/*-setup.exe)
+          if ($installers.Count -ne 1) { throw 'Expected exactly one installer' }
+          New-Item -ItemType Directory -Force dist | Out-Null
+          Copy-Item $installers[0].FullName dist/Paper-v0.1.0-windows-x64-setup.exe
+          $exe = (Resolve-Path dist/Paper-v0.1.0-windows-x64-setup.exe).Path
+          $bytes = [System.IO.File]::ReadAllBytes($exe)
+          if ($bytes.Length -lt 100000 -or $bytes[0] -ne 77 -or $bytes[1] -ne 90) { throw 'Invalid installer executable' }
+          $hash = (Get-FileHash $exe -Algorithm SHA256).Hash.ToLowerInvariant()
+          "$hash  Paper-v0.1.0-windows-x64-setup.exe" | Set-Content dist/SHA256SUMS-installer.txt -Encoding ascii
+      - name: Silent installation smoke check on disposable runner
+        shell: pwsh
+        run: |
+          $exe = (Resolve-Path dist/Paper-v0.1.0-windows-x64-setup.exe).Path
+          $destination = Join-Path $env:RUNNER_TEMP 'PaperInstallerSmoke'
+          $process = Start-Process -FilePath $exe -ArgumentList @('/S', "/D=$destination") -Wait -PassThru
+          if ($process.ExitCode -ne 0) { throw "Silent installation failed: $($process.ExitCode)" }
+          if (!(Test-Path (Join-Path $destination 'paper-reader.exe'))) { throw 'Installed application not found' }
+          $uninstaller = Join-Path $destination 'uninstall.exe'
+          if (!(Test-Path $uninstaller)) { throw 'Uninstaller not found' }
+          $process = Start-Process -FilePath $uninstaller -ArgumentList '/S' -Wait -PassThru
+          if ($process.ExitCode -ne 0) { throw "Silent uninstallation failed: $($process.ExitCode)" }
+          for ($i = 0; $i -lt 30 -and (Test-Path (Join-Path $destination 'paper-reader.exe')); $i++) { Start-Sleep -Seconds 1 }
+          if (Test-Path (Join-Path $destination 'paper-reader.exe')) { throw 'Application remains after uninstall' }
+      - uses: actions/upload-artifact@v4
+        with:
+          name: paper-v0.1.0-installer-assets
+          path: |
+            dist/Paper-v0.1.0-windows-x64-setup.exe
+            dist/SHA256SUMS-installer.txt
+          if-no-files-found: error
+  publish:
+    needs: installer
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: paper-v0.1.0-installer-assets
+          path: dist
+      - name: Add verified installer without replacing portable assets
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            const crypto = require('crypto');
+            const { owner, repo } = context.repo;
+            const tag = 'v0.1.0';
+            const target = process.env.RELEASE_SHA;
+            const installerName = 'Paper-v0.1.0-windows-x64-setup.exe';
+            const hash = name => 'sha256:' + crypto.createHash('sha256').update(fs.readFileSync('dist/' + name)).digest('hex');
+            const checksum = fs.readFileSync('dist/SHA256SUMS-installer.txt', 'utf8').trim();
+            if (checksum !== hash(installerName).slice(7) + '  ' + installerName) throw new Error('Checksum mismatch');
+            const release = (await github.rest.repos.getReleaseByTag({ owner, repo, tag })).data;
+            if (release.draft || release.target_commitish !== target || release.immutable)
+              throw new Error('Release not ready, wrong target, or immutable; refusing to modify');
+            const ref = (await github.rest.git.getRef({ owner, repo, ref: 'tags/' + tag })).data;
+            if (ref.object.type !== 'commit' || ref.object.sha !== target) throw new Error('Release tag mismatch');
+            const existing = (await github.rest.repos.listReleaseAssets({ owner, repo, release_id: release.id, per_page: 100 })).data;
+            if (!existing.some(asset => asset.name === 'Paper-v0.1.0-windows-x64.zip'))
+              throw new Error('Portable asset missing; wait for initial release');
+            for (const name of [installerName, 'SHA256SUMS-installer.txt']) {
+              const data = fs.readFileSync('dist/' + name);
+              const digest = hash(name);
+              const old = existing.find(asset => asset.name === name);
+              if (old) {
+                if (old.digest !== digest || old.size !== data.length) throw new Error('Existing installer asset differs: ' + name);
+              } else {
+                const asset = (await github.rest.repos.uploadReleaseAsset({
+                  owner, repo, release_id: release.id, name, data,
+                  headers: { 'content-type': name.endsWith('.exe') ? 'application/vnd.microsoft.portable-executable' : 'text/plain',
+                    'content-length': data.length }
+                })).data;
+                if (asset.digest !== digest || asset.size !== data.length) throw new Error('Upload verification failed: ' + name);
+              }
+            }
+            let body = (release.body || '').replace('此版本未做代码签名，不包含安装器。', '便携版和安装版均未做代码签名。');
+            const heading = '### Windows 安装版';
+            if (!body.includes(heading)) body += '\n\n' + heading + '\n' +
+              '- 下载 Paper-v0.1.0-windows-x64-setup.exe，支持简体中文和 English 安装界面。\n' +
+              '- 按当前用户安装，提供卸载程序，并注册 .md/.markdown/.mdown 打开方式。\n' +
+              '- 缺少 WebView2 时安装器会下载其引导程序，需要联网。\n' +
+              '- 校验文件：SHA256SUMS-installer.txt；便携版原校验文件保持不变。\n' +
+              '- 已在临时 Windows CI 环境完成静默安装与卸载检查；不等同于真实桌面交互验收。';
+            await github.rest.repos.updateRelease({ owner, repo, release_id: release.id, body });
+            core.notice('Installer added to ' + release.html_url);
