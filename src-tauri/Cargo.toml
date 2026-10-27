@@ -24,6 +24,9 @@ percent-encoding = "2"
 url = "2"
 open = "5"
 
+[target.'cfg(windows)'.dependencies]
+tauri-plugin-single-instance = "=2.5.4"
+
 [dev-dependencies]
 tempfile = "3"
 
@@ -37,4 +40,5 @@ lto = true
 codegen-units = 1
 panic = "abort"
 strip = true
+
 
