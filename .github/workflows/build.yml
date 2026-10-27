@@ -8,9 +8,14 @@ permissions:
 jobs:
   windows:
     runs-on: windows-latest
-    timeout-minutes: 30
+    timeout-minutes: 35
     steps:
       - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Install pinned installer CLI and native test dependencies
+        run: npm install --no-save --ignore-scripts --no-package-lock --no-audit --no-fund @tauri-apps/cli@2.12.4
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt
@@ -19,7 +24,26 @@ jobs:
           workspaces: src-tauri
       - run: cargo fmt --manifest-path src-tauri/Cargo.toml -- --check
       - run: cargo test --locked --manifest-path src-tauri/Cargo.toml
-      - run: cargo build --release --locked --manifest-path src-tauri/Cargo.toml
+      - name: Build Windows NSIS installer
+        run: node node_modules/@tauri-apps/cli/tauri.js build --ci --bundles nsis -- --locked
+      - name: Verify installed app and associations on disposable runner
+        shell: pwsh
+        run: |
+          $installers = @(Get-ChildItem src-tauri/target/release/bundle/nsis/*-setup.exe)
+          if ($installers.Count -ne 1) { throw 'Expected exactly one NSIS installer' }
+          ./scripts/test-installer.ps1 -Installer $installers[0].FullName
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Paper-Windows-installer
+          path: src-tauri/target/release/bundle/nsis/*-setup.exe
+          if-no-files-found: error
+      - name: Upload native test evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: Paper-native-test-results
+          path: test-results/*.png
+          if-no-files-found: ignore
       - uses: actions/upload-artifact@v4
         with:
           name: Paper-Windows-portable
@@ -52,3 +76,4 @@ jobs:
           name: Paper-browser-test-results
           path: test-results
           if-no-files-found: ignore
+

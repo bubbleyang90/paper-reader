@@ -1,7 +1,10 @@
 pub mod document;
+mod launch;
 
 use document::{Document, Rendered};
 use std::path::Path;
+#[cfg(windows)]
+use tauri::{Emitter, Manager};
 
 // Parsing, disk access and dialogs run away from the UI thread. There are no
 // polling loops, background document watchers or persistent document caches.
@@ -37,15 +40,26 @@ async fn render_markdown(source: String) -> Result<Rendered, String> {
 }
 
 #[tauri::command]
-async fn get_startup_document() -> Result<Option<Document>, String> {
-    background(|| {
-        std::env::args_os()
-            .skip(1)
-            .find(|arg| document::is_document_path(Path::new(arg)))
-            .map(|arg| document::read(Path::new(&arg)))
-            .transpose()
-    })
-    .await
+fn take_pending_documents(
+    pending: tauri::State<'_, launch::PendingDocuments>,
+) -> Vec<std::path::PathBuf> {
+    pending.take()
+}
+
+#[tauri::command]
+async fn open_default_apps() -> Result<(), String> {
+    #[cfg(windows)]
+    {
+        background(|| {
+            open::that("ms-settings:defaultapps?registeredAppUser=Paper")
+                .map_err(|error| format!("无法打开 Windows 默认应用设置：{error}"))
+        })
+        .await
+    }
+    #[cfg(not(windows))]
+    {
+        Err("默认应用设置仅适用于 Windows 安装版".into())
+    }
 }
 
 #[tauri::command]
@@ -63,12 +77,29 @@ async fn open_external(url: String) -> Result<(), String> {
 }
 
 pub fn run() {
-    tauri::Builder::default()
+    let pending = launch::PendingDocuments::default();
+    let cwd = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
+    pending.enqueue(launch::document_paths(std::env::args_os(), &cwd));
+    let builder = tauri::Builder::default().manage(pending);
+    // Register this first: secondary launches forward their arguments and exit.
+    #[cfg(windows)]
+    let builder = builder.plugin(tauri_plugin_single_instance::init(|app, args, cwd| {
+        app.state::<launch::PendingDocuments>()
+            .enqueue(launch::document_paths(args, Path::new(&cwd)));
+        let _ = app.emit_to("main", "paper://open-documents", ());
+        if let Some(window) = app.get_webview_window("main") {
+            let _ = window.show();
+            let _ = window.unminimize();
+            let _ = window.set_focus();
+        }
+    }));
+    builder
         .invoke_handler(tauri::generate_handler![
             open_document,
             read_document,
             render_markdown,
-            get_startup_document,
+            take_pending_documents,
+            open_default_apps,
             read_local_image,
             open_external
         ])

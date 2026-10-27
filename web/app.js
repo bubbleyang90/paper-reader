@@ -478,20 +478,44 @@ fn main() {
     document.addEventListener('dragleave', () => { if (--dragDepth <= 0) { dragDepth = 0; $('drop-overlay').hidden = true; } });
     document.addEventListener('drop', event => { event.preventDefault(); dragDepth = 0; $('drop-overlay').hidden = true; browserFile(event.dataTransfer.files[0]); });
   }
+  // Subscribe before draining Rust's queue: launches during WebView startup are
+  // retained, and a launch during a drain schedules another drain (no lost event).
+  let drainingLaunches = false, launchDrainRequested = false;
+  async function drainLaunches() {
+    launchDrainRequested = true;
+    if (drainingLaunches) return;
+    drainingLaunches = true;
+    try {
+      while (launchDrainRequested) {
+        launchDrainRequested = false;
+        const paths = await invoke('take_pending_documents');
+        // Start in request order, without blocking newer requests on disk I/O.
+        // loadPath's generation check prevents old reads replacing a newer file.
+        for (const path of paths) void loadPath(path);
+      }
+    } catch (e) { toast(`无法接收文件：${e.message || e}`); }
+    finally { drainingLaunches = false; }
+  }
+  $('default-apps-button').addEventListener('click', async () => {
+    try { await invoke('open_default_apps'); }
+    catch (e) { toast(`无法打开默认应用设置：${e.message || e}`); }
+  });
   async function init() {
     setOutlineHidden(compactOutline.matches);
     applyPreferences(); renderRecent();
     $('runtime-label').textContent = native ? '本地阅读 · Rust 驱动' : '浏览器预览';
+    $('file-association-setting').hidden = !(native && /Win/i.test(navigator.platform));
     await welcome();
     if (native) {
       try {
         await window.__TAURI__.event.listen('tauri://drag-enter', () => { $('drop-overlay').hidden = false; });
         await window.__TAURI__.event.listen('tauri://drag-leave', () => { $('drop-overlay').hidden = true; });
         await window.__TAURI__.event.listen('tauri://drag-drop', event => { $('drop-overlay').hidden = true; if (event.payload.paths?.[0]) loadPath(event.payload.paths[0]); });
-        const startupId = state.loadId;
-        const doc = await invoke('get_startup_document'); if (doc && state.loadId === startupId) await showDocument(doc, ++state.loadId);
+        await window.__TAURI__.event.listen('paper://open-documents', () => { void drainLaunches(); });
+        await drainLaunches();
       } catch (e) { toast(String(e)); }
     }
   }
   init().catch(e => toast(`启动失败：${e.message || e}`));
 })();
+

@@ -25,23 +25,32 @@
     ],
     "security": {
       "csp": "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: http: https:; font-src 'self'; connect-src ipc: http://ipc.localhost; object-src 'none'; base-uri 'none'; frame-src 'none'; form-action 'none'",
-      "capabilities": ["main"]
+      "capabilities": [
+        "main"
+      ]
     }
   },
   "bundle": {
     "active": true,
-    "targets": ["nsis"],
+    "targets": [
+      "nsis"
+    ],
     "category": "Productivity",
     "shortDescription": "A lightweight Markdown reader",
-    "icon": ["icons/icon.png", "icons/icon.ico"],
-    "fileAssociations": [
-      {
-        "ext": ["md", "markdown", "mdown"],
-        "name": "Markdown document",
-        "description": "Markdown document",
-        "role": "Viewer"
+    "icon": [
+      "icons/icon.png",
+      "icons/icon.ico"
+    ],
+    "windows": {
+      "nsis": {
+        "installMode": "currentUser",
+        "languages": [
+          "SimpChinese",
+          "English"
+        ],
+        "displayLanguageSelector": true,
+        "installerHooks": "installer/file-associations.nsh"
       }
-    ]
+    }
   }
 }
-

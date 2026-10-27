@@ -39,9 +39,9 @@ async function newPage(t, native = false) {
         core: {
           invoke: async (command, args) => {
             if (command === 'render_markdown') return { html: '<h1>Welcome</h1>', wordCount: 1, readingMinutes: 1 };
-            if (command === 'get_startup_document') return doc;
+            if (command === 'take_pending_documents') return [doc.path];
             if (command === 'open_document') { window.nativeTest.openCalls = (window.nativeTest.openCalls || 0) + 1; return window.nativeTest.openResult; }
-            if (command === 'read_document') throw new Error('Missing test document');
+            if (command === 'read_document') { if (args.path === doc.path) return doc; throw new Error('Missing test document'); }
             if (command === 'read_local_image') return new Promise(resolve => {
               window.nativeTest.images.push({ path: args.imagePath, resolve });
             });
@@ -140,4 +140,51 @@ test('replacing the document discards the old image queue', async t => {
   await page.evaluate(pixel => window.nativeTest.images.find(image => image.path === 'new.png').resolve(pixel), pixel);
   await page.waitForFunction(() => document.querySelector('#article img')?.getAttribute('src')?.startsWith('data:image/png'));
   assert.deepEqual(await page.evaluate(() => window.nativeTest.images.map(image => image.path)), ['one.png', 'two.png', 'new.png']);
+});
+
+
+test('native file launches survive startup and newer/repeated requests win', async t => {
+  const context = await browser.newContext();
+  t.after(() => context.close());
+  const page = await context.newPage();
+  await page.addInitScript(() => {
+    const handlers = {};
+    const pending = ['C:\\阅读 笔记\\初次.md'];
+    const delayed = {};
+    window.launchTest = {
+      handlers, delayed,
+      send(path) { pending.push(path); handlers['paper://open-documents']?.({}); },
+    };
+    window.__TAURI__ = {
+      event: { listen: async (name, callback) => { handlers[name] = callback; return () => {}; } },
+      core: { invoke: async (command, args) => {
+        if (command === 'render_markdown') return { html: '<h1>Welcome</h1>', wordCount: 1, readingMinutes: 1 };
+        if (command === 'take_pending_documents') return pending.splice(0);
+        if (command === 'read_document') {
+          const name = args.path.split('\\').pop();
+          if (name === 'missing.md') throw new Error('Missing document');
+          const doc = { path: args.path, name, source: `# ${name}`, html: `<h1>${name}</h1>`, wordCount: 1, readingMinutes: 1 };
+          if (name === 'slow.md') return new Promise(resolve => { delayed.slow = () => resolve(doc); });
+          return doc;
+        }
+        throw new Error(`Unexpected command ${command}`);
+      } },
+    };
+  });
+  await page.goto(base);
+  await page.waitForFunction(() => document.querySelector('#article h1')?.textContent === '初次.md');
+  await page.evaluate(() => window.launchTest.send('C:\\阅读 笔记\\slow.md'));
+  await page.waitForFunction(() => !!window.launchTest.delayed.slow);
+  await page.evaluate(() => window.launchTest.send('C:\\阅读 笔记\\第二 次.md'));
+  await page.waitForFunction(() => document.querySelector('#article h1')?.textContent === '第二 次.md');
+  await page.evaluate(() => window.launchTest.delayed.slow());
+  await page.waitForTimeout(100);
+  assert.equal(await page.locator('#article h1').innerText(), '第二 次.md');
+  await page.click('#welcome-button');
+  await page.waitForFunction(() => document.querySelector('#article h1')?.textContent === 'Welcome');
+  await page.evaluate(() => window.launchTest.send('C:\\阅读 笔记\\第二 次.md'));
+  await page.waitForFunction(() => document.querySelector('#article h1')?.textContent === '第二 次.md');
+  await page.evaluate(() => window.launchTest.send('C:\\阅读 笔记\\missing.md'));
+  await page.waitForFunction(() => document.querySelector('#toast')?.textContent.includes('Missing document'));
+  assert.equal(await page.locator('#article h1').innerText(), '第二 次.md');
 });

@@ -54,7 +54,9 @@ cargo build --release --manifest-path src-tauri/Cargo.toml
 
 如本机尚未安装 Rust，可运行 `scripts/bootstrap-rust.ps1`，把 GNU 工具链及资源编译工具下载到本项目的 `.tools` 目录；首次下载需要网络和额外磁盘空间。它们仅用于开发构建，不属于阅读器的发行体积。脚本在进程内使用系统已有代理配置，不修改系统 PATH 或代理设置。标准 MSVC 构建仍是推荐路径。
 
-如需 NSIS 安装程序，安装 [Tauri CLI](https://v2.tauri.app/reference/cli/) 后，在 `src-tauri` 目录运行 `cargo tauri build`。安装程序配置包含 Markdown 文件关联；直接 `cargo build` 不生成安装包，也不修改系统文件关联。
+如需 NSIS 安装程序，安装 [Tauri CLI](https://v2.tauri.app/reference/cli/) 后，在 `src-tauri` 目录运行 `cargo tauri build`。Windows 安装版会自动把 Paper 注册到 `.md`、`.markdown`、`.mdown` 的“打开方式”和 Windows“默认应用”中，不覆盖已有默认阅读器。要让双击始终使用 Paper，在软件的 **阅读设置 → 设置默认应用** 中打开 Windows 设置并确认选择 Paper；Windows 10/11 的默认应用选择由用户控制，软件不会改写或绕过 `UserChoice`。直接 `cargo build` 的便携版不生成安装包，也不注册文件关联。
+
+通过关联打开文档时，支持中文、空格路径和相对路径；Paper 已运行时会在原窗口打开并聚焦，重复打开同一文件也会重新读取。启动期间收到的打开请求会保留，较早的慢读取不会覆盖较新的文档。卸载仅移除仍由本安装目录拥有的 Paper 注册项，保留其他应用的候选项和默认选择。
 
 ## 立即预览界面
 
@@ -84,7 +86,7 @@ node tests/native-smoke.mjs
 
 如果使用其他浏览器，将 `BROWSER_CHANNEL` 设置为 Playwright 支持的通道，如 `chrome`。测试会自动启动临时本地服务，并把界面截图保存到 `test-results`。测试覆盖实际文件读取、中文、GFM、内容清洗、搜索、偏好保存、视图切换和阅读进度。
 
-运行 `npm test` 可执行全部浏览器测试，包括快速更换搜索词、远程资源加载限制，以及使用模拟 Tauri IPC 验证取消／失败打开和延迟图片响应。模拟 IPC 测试不等同于真实 WebView2 桌面验收。GitHub Actions 会独立运行 Windows Rust 测试／发布构建和 Edge 浏览器回归；无需在个人电脑运行这些检查。
+运行 `npm test` 可执行全部浏览器测试，包括快速更换搜索词、远程资源加载限制，以及使用模拟 Tauri IPC 验证取消／失败打开和延迟图片响应。模拟 IPC 测试不等同于真实 WebView2 桌面验收。GitHub Actions 会独立运行 Windows Rust 测试、NSIS 安装包构建与安装／卸载回归、真实 WebView2 文件打开验收和 Edge 浏览器回归；无需在个人电脑运行这些检查。`scripts/test-installer.ps1` 会修改测试注册表，只允许在一次性的 GitHub-hosted Windows runner 上执行。
 
 ## 低占用设计
 
@@ -124,3 +126,4 @@ tests/              浏览器功能验证
 - [DOMPurify](https://github.com/cure53/DOMPurify)：浏览器预览内容清洗，固定版本 3.4.17。
 
 应用代码采用 MIT 许可证。第三方代码保留原有许可证；详见 `web/vendor` 中的许可证文件及 Rust 依赖各自的许可证。
+
