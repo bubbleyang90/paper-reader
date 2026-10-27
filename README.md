@@ -86,7 +86,7 @@ node tests/native-smoke.mjs
 
 如果使用其他浏览器，将 `BROWSER_CHANNEL` 设置为 Playwright 支持的通道，如 `chrome`。测试会自动启动临时本地服务，并把界面截图保存到 `test-results`。测试覆盖实际文件读取、中文、GFM、内容清洗、搜索、偏好保存、视图切换和阅读进度。
 
-运行 `npm test` 可执行全部浏览器测试，包括快速更换搜索词、远程资源加载限制，以及使用模拟 Tauri IPC 验证取消／失败打开和延迟图片响应。模拟 IPC 测试不等同于真实 WebView2 桌面验收。GitHub Actions 会独立运行 Windows Rust 测试、NSIS 安装包构建与安装／卸载回归、真实 WebView2 文件打开验收和 Edge 浏览器回归；无需在个人电脑运行这些检查。`scripts/test-installer.ps1` 会修改测试注册表，只允许在一次性的 GitHub-hosted Windows runner 上执行。
+运行 `npm test` 可执行全部浏览器测试，包括快速更换搜索词、远程资源加载限制，以及使用模拟 Tauri IPC 验证取消／失败打开和延迟图片响应。模拟 IPC 测试不等同于真实 WebView2 桌面验收。GitHub Actions 会独立运行 Windows Rust 测试、NSIS 安装包构建与安装／卸载回归、真实 WebView2 文件打开验收和 Edge 浏览器回归；无需在个人电脑运行这些检查。`scripts/test-installer.ps1` 会修改测试注册表，只允许在一次性的 GitHub-hosted Windows runner 上执行。CI 先保存不带调试端口的生产安装包，再用临时配置生成仅用于 WebView2 自动验收的安装包（额外 CDP 参数和隔离数据目录，不上传）；不会修改系统调试策略。真实 Explorer 默认程序选择界面及旧版升级仍需人工验收。
 
 ## 低占用设计
 

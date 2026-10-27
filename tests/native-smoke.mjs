@@ -47,16 +47,19 @@ const app = spawn(exe, [first], {
   },
   stdio: ['ignore', 'ignore', 'pipe'],
 });
-let launchError, browser;
+let launchError, browser, stderr = '';
 app.on('error', e => { launchError = e; });
-app.stderr.on('data', data => process.stderr.write(data));
+app.stderr.on('data', data => { stderr += data; process.stderr.write(data); });
 try {
-  for (let tries = 0; tries < 80; tries++) {
+  let cdpReady = false;
+  const deadline = Date.now() + 60000;
+  while (Date.now() < deadline) {
     if (launchError) throw launchError;
     if (app.exitCode !== null) throw new Error(`App exited: ${app.exitCode}`);
-    try { if ((await fetch(`http://127.0.0.1:${port}/json/version`, { signal: AbortSignal.timeout(1000) })).ok) break; } catch {}
+    try { if ((await fetch(`http://127.0.0.1:${port}/json/version`, { signal: AbortSignal.timeout(1000) })).ok) { cdpReady = true; break; } } catch {}
     await new Promise(resolve => setTimeout(resolve, 250));
   }
+  if (!cdpReady) throw new Error(`WebView2 CDP did not start within 60s; app pid=${app.pid}, exitCode=${app.exitCode}, signal=${app.signalCode}. Inspect native-diagnostics.txt for runtime processes (an alive host is not evidence the UI loaded).`);
   browser = await chromium.connectOverCDP(`http://127.0.0.1:${port}`, { timeout: 15000 });
   const context = browser.contexts()[0];
   const page = context.pages()[0] || await context.waitForEvent('page');
@@ -103,6 +106,13 @@ try {
   console.log(`Native process-tree memory snapshot (not a benchmark): ${memory.stdout.trim()}`);
   console.log('PASS: Unicode/spaced cold launch, relative warm launch, repeated file, latest request wins, missing file recovery, Rust IPC rendering, sanitization, GFM, theme, document search.');
   console.log(`Native process id: ${app.pid}`);
+} catch (error) {
+  const script = "Get-CimInstance Win32_Process | Where-Object { $_.Name -in @('paper-reader.exe', 'msedgewebview2.exe') } | Select-Object ProcessId,ParentProcessId,Name,ExecutablePath,CommandLine | ConvertTo-Json -Depth 3";
+  const diagnostics = await promisify(execFile)('powershell.exe', ['-NoProfile', '-Command', script], { windowsHide: true, timeout: 15000 }).catch(e => ({ stdout: String(e) }));
+  const report = `${error.stack}\nHost exitCode=${app.exitCode}, signal=${app.signalCode}\nSTDERR:\n${stderr}\nProcesses:\n${diagnostics.stdout}`;
+  await writeFile('test-results/native-diagnostics.txt', report);
+  console.error(report);
+  throw error;
 } finally {
   for (const child of children) child.kill();
   await browser?.close().catch(() => {});
