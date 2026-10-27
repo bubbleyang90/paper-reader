@@ -1,0 +1,203 @@
+name: Publish Paper v0.1.1
+on:
+  push:
+    branches: ['release/v0.1.1']
+    paths: ['.github/workflows/release-v0.1.1.yml']
+concurrency:
+  group: paper-release-v0.1.1
+  cancel-in-progress: false
+permissions:
+  contents: read
+jobs:
+  windows:
+    if: github.repository == 'bubbleyang90/paper-reader'
+    runs-on: windows-latest
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Install pinned installer CLI and native test dependencies
+        run: npm install --no-save --ignore-scripts --no-package-lock --no-audit --no-fund @tauri-apps/cli@2.12.4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+      - run: cargo fmt --manifest-path src-tauri/Cargo.toml -- --check
+      - run: cargo test --locked --manifest-path src-tauri/Cargo.toml
+      - name: Build Windows NSIS installer
+        run: node node_modules/@tauri-apps/cli/tauri.js build --ci --bundles nsis -- --locked
+      # Preserve production bytes before the instrumented rebuild.
+      - name: Package production assets and verify release metadata
+        shell: pwsh
+        run: |
+          if ((git rev-parse HEAD) -ne $env:GITHUB_SHA) { throw 'Source SHA mismatch' }
+          $config = Get-Content src-tauri/tauri.conf.json -Raw | ConvertFrom-Json
+          if ($config.version -ne '0.1.1' -or (Get-Content package.json -Raw | ConvertFrom-Json).version -ne '0.1.1') { throw 'Version mismatch' }
+          if (($config.app.windows | ConvertTo-Json -Depth 20) -match 'remote-debugging|native-ci|dataDirectory') { throw 'Production config contains instrumentation' }
+          $metadata = cargo metadata --locked --manifest-path src-tauri/Cargo.toml --no-deps --format-version 1 | ConvertFrom-Json
+          if ($LASTEXITCODE -ne 0 -or ($metadata.packages | Where-Object name -eq 'paper-reader').version -ne '0.1.1') { throw 'Cargo version mismatch' }
+          $exe = Get-Item src-tauri/target/release/paper-reader.exe
+          if ($exe.VersionInfo.ProductVersion -notmatch '^0\.1\.1(\.|$)') { throw "Executable version mismatch: $($exe.VersionInfo.ProductVersion)" }
+          $installers = @(Get-ChildItem src-tauri/target/release/bundle/nsis/Paper_0.1.1_x64-setup.exe)
+          if ($installers.Count -ne 1) { throw 'Expected versioned x64 installer' }
+          New-Item -ItemType Directory -Force dist/package/licenses | Out-Null
+          Copy-Item $installers[0].FullName dist/Paper-v0.1.1-windows-x64-setup.exe
+          Copy-Item $exe.FullName dist/package/Paper.exe
+          Copy-Item LICENSE dist/package/LICENSE
+          Copy-Item web/vendor/DOMPurify.LICENSE dist/package/licenses/
+          Copy-Item web/vendor/marked.LICENSE.md dist/package/licenses/
+          if (Test-Path src-tauri/target/release/WebView2Loader.dll) { Copy-Item src-tauri/target/release/WebView2Loader.dll dist/package/ }
+          @"
+          Paper 0.1.1 - Windows x64 portable
+          Extract the entire ZIP and run Paper.exe.
+          Requires Microsoft Edge WebView2 Runtime. This build is unsigned.
+          Portable mode does not register file associations. Use the installer for integration.
+          Source commit: $env:GITHUB_SHA
+          Native CI uses a separately instrumented build, not these production bytes.
+          "@ | Set-Content dist/package/README.txt -Encoding utf8
+          Compress-Archive -Path dist/package/* -DestinationPath dist/Paper-v0.1.1-windows-x64.zip
+          $assets = @('Paper-v0.1.1-windows-x64-setup.exe', 'Paper-v0.1.1-windows-x64.zip')
+          $sums = foreach ($name in $assets) {
+            $file = Get-Item "dist/$name"
+            if ($file.Length -lt 100000) { throw "Unexpected asset size: $name" }
+            "$((Get-FileHash $file -Algorithm SHA256).Hash.ToLowerInvariant())  $name"
+          }
+          $sums | Set-Content dist/SHA256SUMS.txt -Encoding ascii
+          Get-Content docs/releases/v0.1.1.md -Raw | Set-Content dist/release-notes.md -Encoding utf8
+          "发布源提交：$env:GITHUB_SHA。基于合并提交 22f824c1b770935f255e199619814e32d387e5fe，仅增加版本元数据和本次发布流程。" | Add-Content dist/release-notes.md -Encoding utf8
+          $env:GITHUB_SHA | Set-Content dist/source-sha.txt -Encoding ascii
+          Get-Content dist/SHA256SUMS.txt
+      - name: Build CI-only native instrumentation installer (never uploaded)
+        shell: pwsh
+        run: |
+          # Elevated WebView2 150+ ignores WEBVIEW2_* environment overrides.
+          # Pass CDP through the supported per-process API via a temporary Tauri
+          # config, not machine/user policies. Production artifacts above have no port.
+          $config = Get-Content src-tauri/tauri.conf.json -Raw | ConvertFrom-Json
+          $config.app.windows[0].additionalBrowserArgs += ' --remote-debugging-port=9223 --remote-debugging-address=127.0.0.1'
+          $config.app.windows[0] | Add-Member -NotePropertyName dataDirectory -NotePropertyValue "studio.paper.reader.native-ci-$env:GITHUB_RUN_ID"
+          $override = @{ app = @{ windows = $config.app.windows } } | ConvertTo-Json -Depth 20
+          $overridePath = Join-Path $env:RUNNER_TEMP 'paper-native-test-config.json'
+          Set-Content $overridePath $override -Encoding utf8
+          node node_modules/@tauri-apps/cli/tauri.js build --ci --bundles nsis --config $overridePath -- --locked
+      - name: Verify instrumented installed app and associations on disposable runner
+        shell: pwsh
+        run: |
+          $installers = @(Get-ChildItem src-tauri/target/release/bundle/nsis/Paper_0.1.1_x64-setup.exe)
+          if ($installers.Count -ne 1) { throw 'Expected exactly one NSIS installer' }
+          ./scripts/test-installer.ps1 -Installer $installers[0].FullName
+      - uses: actions/upload-artifact@v4
+        with:
+          name: paper-v0.1.1-release-assets
+          path: |
+            dist/Paper-v0.1.1-windows-x64-setup.exe
+            dist/Paper-v0.1.1-windows-x64.zip
+            dist/SHA256SUMS.txt
+            dist/release-notes.md
+            dist/source-sha.txt
+          if-no-files-found: error
+      - name: Upload native test evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: Paper-native-test-results
+          path: |
+            test-results/*.png
+            test-results/native-diagnostics.txt
+          if-no-files-found: ignore
+  browser:
+    runs-on: windows-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Install browser test dependencies
+        run: npm install --ignore-scripts --no-package-lock --no-audit --no-fund
+      - name: Check JavaScript syntax
+        run: |
+          node --check web/app.js
+          node --check scripts/preview.mjs
+      - name: Run browser regressions in Microsoft Edge
+        run: npm test
+        env:
+          BROWSER_CHANNEL: msedge
+      - name: Upload browser test evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: Paper-browser-test-results
+          path: test-results
+          if-no-files-found: ignore
+
+
+  publish:
+    needs: [windows, browser]
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: paper-v0.1.1-release-assets
+          path: dist
+      - name: Verify and publish only v0.1.1
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs'), crypto = require('crypto');
+            const { owner, repo } = context.repo;
+            const tag = 'v0.1.1', target = context.sha;
+            const base = '22f824c1b770935f255e199619814e32d387e5fe';
+            const names = ['Paper-v0.1.1-windows-x64-setup.exe', 'Paper-v0.1.1-windows-x64.zip', 'SHA256SUMS.txt'];
+            const data = Object.fromEntries(names.map(n => [n, fs.readFileSync('dist/' + n)]));
+            const digest = n => crypto.createHash('sha256').update(data[n]).digest('hex');
+            if (fs.readFileSync('dist/source-sha.txt', 'utf8').trim() !== target) throw new Error('Artifact source mismatch');
+            const sums = data['SHA256SUMS.txt'].toString('utf8').trim().split(/\r?\n/);
+            if (sums.length !== 2 || names.slice(0, 2).some((n, i) => sums[i] !== digest(n) + '  ' + n)) throw new Error('Checksum mismatch');
+            const main = (await github.rest.repos.getBranch({ owner, repo, branch: 'main' })).data;
+            if (main.commit.sha !== base) throw new Error('main changed; review before publication');
+            const source = (await github.rest.git.getCommit({ owner, repo, commit_sha: target })).data;
+            if (source.parents.length !== 1 || source.parents[0].sha !== base) throw new Error('Unexpected release parent');
+            let ref;
+            try { ref = (await github.rest.git.getRef({ owner, repo, ref: 'tags/' + tag })).data; }
+            catch (e) { if (e.status !== 404) throw e; }
+            if (ref && (ref.object.type !== 'commit' || ref.object.sha !== target)) throw new Error('Tag conflict; never overwrite');
+            let release;
+            try { release = (await github.rest.repos.getReleaseByTag({ owner, repo, tag })).data; }
+            catch (e) { if (e.status !== 404) throw e; }
+            if (release && release.target_commitish !== target) throw new Error('Release target conflict');
+            if (!release) release = (await github.rest.repos.createRelease({
+              owner, repo, tag_name: tag, target_commitish: target, name: '纸页 Paper v0.1.1',
+              body: fs.readFileSync('dist/release-notes.md', 'utf8'), draft: true, prerelease: false
+            })).data;
+            const existing = (await github.rest.repos.listReleaseAssets({ owner, repo, release_id: release.id, per_page: 100 })).data;
+            if (existing.some(a => !names.includes(a.name))) throw new Error('Unexpected assets; review required');
+            for (const name of names) {
+              const old = existing.find(a => a.name === name);
+              if (old) {
+                if (old.size !== data[name].length || old.digest !== 'sha256:' + digest(name)) throw new Error('Existing asset differs: ' + name);
+              } else {
+                if (!release.draft) throw new Error('Published release missing asset; do not modify');
+                const uploaded = (await github.rest.repos.uploadReleaseAsset({
+                  owner, repo, release_id: release.id, name, data: data[name],
+                  headers: { 'content-type': name.endsWith('.exe') ? 'application/vnd.microsoft.portable-executable' : name.endsWith('.zip') ? 'application/zip' : 'text/plain', 'content-length': data[name].length }
+                })).data;
+                if (uploaded.size !== data[name].length || uploaded.digest !== 'sha256:' + digest(name)) throw new Error('Upload verification failed: ' + name);
+              }
+              core.info(name + ' size=' + data[name].length + ' sha256=' + digest(name));
+            }
+            if (release.draft) release = (await github.rest.repos.updateRelease({ owner, repo, release_id: release.id, draft: false, make_latest: 'true' })).data;
+            const finalRef = (await github.rest.git.getRef({ owner, repo, ref: 'tags/' + tag })).data;
+            if (release.draft || finalRef.object.sha !== target) throw new Error('Final publication verification failed');
+            core.notice('Published ' + release.html_url + ' source=' + target);

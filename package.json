@@ -1,6 +1,6 @@
 {
   "name": "paper-reader",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "private": true,
   "description": "纸页 — a quiet, lightweight Markdown reader powered by Rust",
   "devDependencies": {
